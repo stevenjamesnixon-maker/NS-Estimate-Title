@@ -20,6 +20,8 @@ repository wins** — read the file and then fix this document in the same PR.
 3. **List fields are compared on raw values.** `custbody_quote_type` is read with `getValue()` —
    the option's internal ID — and compared as a string. Never compare against display text.
 4. **`log.warn()` does not exist in SuiteScript.** Use `log.debug()`.
+5. **An over-long title fails at save, outside this script's try/catch.** The Max Title Length
+   parameter is the guard.
 
 ---
 
@@ -28,7 +30,7 @@ repository wins** — read the file and then fix this document in the same PR.
 | # | Decision | Answer |
 |---|---|---|
 | 1 | Repo | `stevenjamesnixon-maker/NS-Estimate-Title` |
-| 2 | Target field | Native Estimate field **`title`** (Free-Form Text, 40 chars). Not a custom field. |
+| 2 | Target field | Native Estimate field **`title`** (Free-Form Text). Not a custom field. No length limit in code; see the Max Title Length parameter (§4). |
 | 3 | Overwrite or fill-blank | **Fill blank only.** If `title` already has a value, leave it alone — never overwrite. |
 | 4 | OneZone quotes | **Skip them**, via the Excluded Quote Types parameter. Steve sets the OneZone type's internal ID on the deployment in each environment. No numeric ID in code. |
 
@@ -42,7 +44,7 @@ repository wins** — read the file and then fix this document in the same PR.
 | **No `search.lookupFields`, no `record.load`** | Everything needed is on `context.newRecord`. Modules are `N/runtime` and `N/log` only. |
 | **No execution-context gating** | The whole point is that it runs for Web Services / REST. |
 | **Empty description → no write** | Debug log only; this is common. |
-| **HTML stripped** | In case `custbody_quote_description` is rich text. A no-op on plain text. HTML entities (`&amp;`) are **not** decoded. |
+| **HTML tags replaced with a space** | In case `custbody_quote_description` is rich text. A space, not empty, so `Kitchen<br>Solid floor` and adjacent `<p>` blocks do not run together; the whitespace collapse tidies the result. A no-op on plain text. HTML entities (`&amp;`) are **not** decoded. |
 | **Failures never block the save** | Errors are logged as `QT_TITLE_FAILED` and swallowed. |
 | **ES5 style** — `var`, `function`, `'use strict'` | House convention. Do not modernise. |
 
@@ -71,20 +73,25 @@ are not; they live on the deployment parameter in each environment.
 
 | What | ID | Notes |
 |---|---|---|
-| Target | `title` | Native Estimate Title. Free-Form Text, 40 chars (`TITLE_MAX_LENGTH`). |
+| Target | `title` | Native Estimate Title. Free-Form Text. Maximum length unverified — see Max Title Length below. |
 | Source | `custbody_quote_description` | Read and trimmed. |
 | Exclusion key | `custbody_quote_type` | Raw value (internal ID) compared as a string. |
 | Script record | `customscript_qt_ue_estimate_title` | Type `_qt_ue_estimate_title` in the ID box. |
 | Deployment | `customdeploy_qt_ue_estimate_title` | Applies To Estimate. Testing → Released. Log Level Debug. Execute As Administrator. Execution Context filter left empty (all). |
 
-### Script parameter
+### Script parameters
 
 | Label | Type in the ID box | Stored ID | Type | Value |
 |---|---|---|---|---|
 | Excluded Quote Types | `_qt_excluded_quote_types` | `custscript_qt_excluded_quote_types` | Free-Form Text | OneZone quote type internal ID, per environment |
+| Max Title Length | `_qt_max_title_length` | `custscript_qt_max_title_length` | Integer Number | **Empty** |
 
-Comma-separated `custbody_quote_type` internal IDs. Split on `,`, each entry trimmed, empties
-dropped, compared as strings. **Empty means exclude none.**
+**Excluded Quote Types:** comma-separated `custbody_quote_type` internal IDs. Split on `,`, each
+entry trimmed, empties dropped, compared as strings. **Empty means exclude none.**
+
+**Max Title Length:** read with `parseInt(..., 10)`. A positive integer truncates the derived title
+to that many characters, then trims a trailing space. **Empty, zero or non-numeric means no
+truncation.** Left empty unless the Title field is shown to reject long values (§7 scenario 2a).
 
 ### Behaviour (beforeSubmit)
 
@@ -92,8 +99,9 @@ dropped, compared as strings. **Empty means exclude none.**
 2. Title non-blank after trim → return (debug). **Checked before the description is read.**
 3. Description blank after trim → return (debug).
 4. Quote type in the excluded list → return, `QT_TITLE_SKIPPED` (audit).
-5. Strip tags, collapse whitespace (`\r`, `\n`, `\t`, runs of spaces) to one space, trim, truncate
-   to 40, trim trailing space left by the cut.
+5. Replace HTML tags with a space, collapse whitespace (`\r`, `\n`, `\t`, runs of spaces) to one
+   space, trim. If Max Title Length is a positive integer, truncate to it and trim the trailing
+   space left by the cut; otherwise no truncation.
 6. Empty result → return (debug). Otherwise set `title` and log `QT_TITLE_SET` (audit).
 
 ---
@@ -116,9 +124,11 @@ Manual. **Steve deploys. Neither Claude deploys.**
 
 1. Upload `qt_ue_estimate_title.js` to `SuiteScripts/EstimateTitle/` in the File Cabinet.
 2. Create the script record `customscript_qt_ue_estimate_title`.
-3. Add the parameter `custscript_qt_excluded_quote_types` (Free-Form Text) on the script record.
+3. Add two parameters on the script record: `custscript_qt_excluded_quote_types` (Free-Form Text)
+   and `custscript_qt_max_title_length` (Integer Number).
 4. Create the deployment `customdeploy_qt_ue_estimate_title` on Estimate, Status **Testing**.
-5. Set the parameter value on the deployment to the OneZone quote type's internal ID.
+5. On the deployment, set Excluded Quote Types to the OneZone quote type's internal ID. Leave Max
+   Title Length **empty** unless scenario 2a fails.
 6. Test (§7).
 7. Set Status to **Released**.
 
@@ -131,7 +141,8 @@ Grep the execution log for `QT_` after every scenario.
 | # | Scenario | Expected |
 |---|---|---|
 | 1 | API create, title blank, description "Smith – 3 bed, solid floor, 85m2" | Title = that string. One `QT_TITLE_SET`, `type: create`. System Notes shows Title set. |
-| 2 | API create, title blank, description 60+ chars | Title = first 40 chars; no save error. |
+| 2a | API create, title blank, description 60+ chars, Max Title Length **empty** | Title = full description. **If the save errors instead, the field has a limit: set the parameter to that limit and run 2b.** |
+| 2b | Same, Max Title Length = 40 | Title = first 40 chars, no trailing space, no save error. |
 | 3 | API create, title blank, empty description | Title blank; no `QT_` line; debug only. |
 | 4 | API create, title in payload, description filled | Title = payload value. No `QT_TITLE_SET`. |
 | 5 | UI create, description filled, save | Title set; at most **one** `QT_TITLE_SET`. See open item 1 — zero is expected if the UI setter filled it first. |
@@ -152,10 +163,10 @@ Grep the execution log for `QT_` after every scenario.
    the description before submit. With fill-blank, a UI save then arrives with a non-blank Title
    and this script logs only a debug line. Scenarios 5 and 7 may therefore show zero
    `QT_TITLE_SET` rather than one. Not a defect — but it means the UI path does not prove this
-   script works; scenarios 1, 2 and 9 (API) do.
+   script works; scenarios 1, 2a and 9 (API) do.
 2. **Copy carries the source Title.** A copied Estimate arrives with the original's Title, so
    fill-blank leaves it alone even if the description is changed on the copy.
-3. **40-character limit unverified in code.** Taken from the brief. If the account's Title field
-   is longer, raise `TITLE_MAX_LENGTH`.
+3. **Title field maximum length unverified.** Parameter left empty; if a long-description save
+   fails in Sandbox, set the parameter.
 4. **Backfill** of existing Estimates with blank Titles is a separate Mass Update, not part of this
    repo's first release.

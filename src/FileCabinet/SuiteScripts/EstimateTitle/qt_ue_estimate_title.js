@@ -12,6 +12,10 @@
  * Quote types listed in the Excluded Quote Types parameter are skipped (OneZone). The list lives
  * on the deployment, not in code, because quote type internal IDs differ between environments.
  *
+ * No title length limit in code. The Max Title Length parameter truncates when set to a positive
+ * integer; empty, zero or non-numeric means no truncation. It is the guard if the Title field turns
+ * out to enforce a maximum: an over-long value fails at save, outside this script's try/catch.
+ *
  * A failure here is logged and swallowed. It must never block an Estimate saving.
  *
  * House style is ES5 throughout — var, function, 'use strict'. Deliberate. Do not modernise.
@@ -31,7 +35,7 @@ define(['N/runtime', 'N/log'], function (runtime, log) {
     var SOURCE_FIELD_ID = 'custbody_quote_description';
     var QUOTE_TYPE_FIELD = 'custbody_quote_type';
     var PARAM_EXCLUDED = 'custscript_qt_excluded_quote_types';
-    var TITLE_MAX_LENGTH = 40;
+    var PARAM_MAX_LENGTH = 'custscript_qt_max_title_length';
 
     /**
      * Reads a field as a trimmed string. Null, undefined and non-string values become ''.
@@ -77,22 +81,46 @@ define(['N/runtime', 'N/log'], function (runtime, log) {
     }
 
     /**
-     * Derives a single-line title from the description: strip HTML tags, collapse all whitespace
-     * (including \r, \n, \t) to single spaces, trim, truncate to TITLE_MAX_LENGTH.
+     * Reads the Max Title Length parameter. Returns the value as an integer when it is a positive
+     * integer, otherwise 0 — empty, zero or non-numeric means no truncation.
+     *
+     * @returns {number}
+     */
+    function readMaxTitleLength() {
+        var raw = runtime.getCurrentScript().getParameter({ name: PARAM_MAX_LENGTH });
+
+        if (raw === null || raw === undefined || String(raw) === '') {
+            return 0;
+        }
+
+        var parsed = parseInt(String(raw), 10);
+
+        return (isNaN(parsed) || parsed <= 0) ? 0 : parsed;
+    }
+
+    /**
+     * Derives a single-line title from the description: HTML tags replaced with a space (so
+     * adjacent blocks do not run together), all whitespace (including \r, \n, \t) collapsed to
+     * single spaces, trimmed. Truncated to maxLength only when maxLength is a positive integer.
      *
      * Trimmed again after truncation so a cut that lands on a space does not leave a trailing one.
      *
      * @param {string} description
+     * @param {number} maxLength - 0 means no truncation
      * @returns {string}
      */
-    function deriveTitle(description) {
+    function deriveTitle(description, maxLength) {
         var text = String(description)
-            .replace(/<[^>]*>/g, '')
+            .replace(/<[^>]*>/g, ' ')
             .replace(/[\r\n\t]/g, ' ')
             .replace(/\s+/g, ' ')
             .replace(/^\s+|\s+$/g, '');
 
-        return text.substring(0, TITLE_MAX_LENGTH).replace(/\s+$/, '');
+        if (maxLength > 0) {
+            return text.substring(0, maxLength).replace(/\s+$/, '');
+        }
+
+        return text;
     }
 
     /**
@@ -145,7 +173,8 @@ define(['N/runtime', 'N/log'], function (runtime, log) {
                 return;
             }
 
-            var derived = deriveTitle(description);
+            var maxLength = readMaxTitleLength();
+            var derived = deriveTitle(description, maxLength);
             if (derived === '') {
                 log.debug('Derived title empty', JSON.stringify({
                     id: recordId, type: context.type, version: VERSION
